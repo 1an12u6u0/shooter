@@ -3,11 +3,15 @@
 #include <raymath.h>
 #include <vector>
 #include <fstream>
-using namespace std;
+#include <stdlib.h>
 
-const int width=1000;
-const int height=1000;
+const int width=1200;
+const int height=900;
 float bullet_speed=8.0f;
+
+using std::vector;
+using std::string;
+using std::cerr;
 
 int score=0;
 int highest_score;
@@ -16,8 +20,8 @@ class Player{
     public:
         float x=width/2.0f;
         float y=height/2.0f;
-        float speed=5.0f;
-        float radius=30.0f;
+        constexpr static float speed=5.0f;
+        constexpr static float radius=25.0f;
 
         float rotation=0.0f;
 
@@ -25,6 +29,8 @@ class Player{
         bool allow_right=1;
         bool allow_up=1;
         bool allow_down=1;
+
+        Vector2 get_pos(){return (Vector2){x,y};};
 
         void Draw(){
             DrawCircle(x,y,radius,BLUE);
@@ -83,6 +89,13 @@ class Gun{
         float radians=0.0f;
         float bullet_radius=5.0f;
 
+        bool active_laser=false;
+
+        bool draw_flash=false;
+        float flash_timer=0.0f;
+        float flash_duration=0.05f;
+        Vector2 flash_pos={0.0f,0.0f};
+
         Rectangle rec;
         Vector2 origin={-20.0f,gun_height/2.0f};
 
@@ -100,9 +113,10 @@ class Gun{
 
         void Angle(){
             Vector2 mouse=GetMousePosition();
+            Vector2 player_pos=player.get_pos();
 
-            float dx=mouse.x-player.x;
-            float dy=mouse.y-player.y;
+            float dx=mouse.x-player_pos.x;
+            float dy=mouse.y-player_pos.y;
 
             radians=atan2f(dy,dx);
             rotation=radians*(180.0f/PI);
@@ -120,9 +134,17 @@ class Gun{
 
                 bullets.push_back(new_bullet);
 
+                draw_flash=true;
+                flash_timer=GetTime();
+                flash_pos={spawn_x,spawn_y};
+
                 //cout<<bullets.size()<<'\n';
             }
             
+        }
+
+        void update_flash(){
+            if(draw_flash&&(GetTime()-flash_timer>=flash_duration)) draw_flash=false;
         }
 
         void Update_bullets(){
@@ -148,12 +170,30 @@ class Gun{
             }
         }
 
+        void draw_laser(){
+            if(active_laser){
+                Vector2 start_pos=(Vector2){rec.x,rec.y};
+
+                Vector2 end_pos=GetMousePosition();
+
+                DrawLineV(start_pos,end_pos,VIOLET);
+                DrawCircleV(end_pos,4.0f,VIOLET);
+            }
+            
+        }
+
         void Draw(){
             Angle();
+            update_flash();
 
             rec={player.x,player.y,gun_width,gun_height};
-
             DrawRectanglePro(rec,origin,rotation,MAROON);
+
+            if(draw_flash){
+                DrawCircleV(flash_pos,bullet_radius*3.0f,ORANGE);
+                DrawCircleV(flash_pos,bullet_radius*1.5f,YELLOW);
+            }
+
         }
         bool Check(float rad,float x,float y){
             if(!bullets.empty()){
@@ -174,15 +214,80 @@ class Gun{
 Gun gun;
 
 struct enemy_data{
-    float x;
-    float y;
-    
+    float x=0;
+    float y=0;
+    float speed=1.0f;
 };
 
-class Enemy{
+struct Particle{
+    Vector2 pos;
+    Vector2 velocity;
+    float radius;
+    float alpha;
+    bool active;
+};
+
+class SplashM{
+    private:
+        vector<Particle> particles;
     public:
-        float speed=1.0f;
-        float radius=25.0f;
+        void trigger(float x,float y){
+            int particle_count=GetRandomValue(30,50);
+            for(int i=0;i<particle_count;i++){
+                Particle p;
+                p.pos={x,y};
+
+                float angle=(float)GetRandomValue(0,360)*DEG2RAD;
+                float speed=(float)GetRandomValue(100,350)/100.0f;
+
+                p.velocity.x=cosf(angle)*speed;
+                p.velocity.y=sinf(angle)*speed;
+                p.radius=(float)GetRandomValue(3,6);
+                p.alpha=1.0f;
+                p.active=true;
+
+                particles.push_back(p);
+            }
+        }
+
+        void update(){
+            for(int i=particles.size()-1;i>=0;i--){
+                if(particles[i].active){
+                    particles[i].pos.x+=particles[i].velocity.x;
+                    particles[i].pos.y+=particles[i].velocity.y;
+
+                    particles[i].alpha-=0.03f;
+                    particles[i].radius-=0.05f;
+
+                    if(particles[i].alpha<=0.0f
+                     ||particles[i].radius<=0.0f) {
+                        particles[i].active = false;
+                    }
+                }
+                else{
+                    particles.erase(particles.begin()+1);
+                }
+            }
+        }
+        void draw(){
+            for(const auto& p:particles){
+                Color p_color=Fade(RED,p.alpha);
+                DrawCircleV(p.pos,p.radius,p_color);
+            }
+        }
+        void clear(){particles.clear();};
+};
+
+SplashM splash_effect;
+
+class Enemy{
+    private:    
+        float spawn_window=2.0f;
+        int last_score=0;
+        constexpr static float min_distance=Player::radius*2;
+        const int score_window_update=10;
+    public:
+        float radius=20.0f;
 
         vector<enemy_data> enemys={{200,100},{300,500}};
 
@@ -195,11 +300,31 @@ class Enemy{
             }
             return 0;
         }
+        float get_random_float(float min,float max){
+            float scale=(float)rand()/(float)RAND_MAX;
+            return min+scale*(max-min);
+        }
+
         void New(){
-            if(timer(2)){
-                float new_x=GetRandomValue(0,width);
-                float new_y=GetRandomValue(0,height);
-                enemy_data new_enemy={new_x,new_y};
+            if(timer(spawn_window)){
+                float new_x,new_y;
+                Vector2 player_pos=player.get_pos();
+                float safe_distance=Player::radius+radius+min_distance;
+
+                float new_speed=get_random_float(1.0f,2.0f);
+                cerr<<new_speed<<'\n';
+
+                while(1){
+                    new_x=(float)GetRandomValue(0,width);
+                    new_y=(float)GetRandomValue(0,height);
+                    
+                    Vector2 new_pos={new_x,new_y};
+
+                    if (!CheckCollisionCircles(player_pos, safe_distance,
+                         new_pos, radius)) break;
+                }
+
+                enemy_data new_enemy={new_x,new_y,new_speed};
                 enemys.push_back(new_enemy);
             }
             
@@ -215,12 +340,18 @@ class Enemy{
 
                     float radians=atan2f(dx,dy);
 
-                    enemys[i].x-=speed*sinf(radians);
-                    enemys[i].y-=speed*cosf(radians);
+                    enemys[i].x-=enemys[i].speed*sinf(radians);
+                    enemys[i].y-=enemys[i].speed*cosf(radians);
                 }
+            }
+
+            if(spawn_window>0.5f&&score>last_score+score_window_update){
+                last_score=score;
+                spawn_window-=0.1f;
             }
         }
         void Draw(){
+            splash_effect.draw();
             if(!enemys.empty()){
                 for(int i=enemys.size()-1;i>=0;i--){
                     float x=enemys[i].x;
@@ -237,6 +368,8 @@ class Enemy{
                     float y=enemys[i].y;
 
                     if(gun.Check(radius,x,y)){
+                        splash_effect.trigger(x,y);
+
                         enemys.erase(enemys.begin()+i);
                         score++;
                     }
@@ -258,6 +391,7 @@ class Enemy{
         }
         void Clear(){
             enemys.clear();
+            splash_effect.clear();
         }
 
 };
@@ -265,7 +399,7 @@ class Enemy{
 Enemy enemy;
 
 void Load_Score(){
-    ifstream fin ("data.txt");
+    std::ifstream fin ("data.txt");
     if(fin.is_open()){
         fin>>highest_score;
         fin.close();
@@ -278,7 +412,7 @@ void Load_Score(){
 void Save_Score(int new_score){
     if(new_score>highest_score){
         highest_score=new_score;
-        ofstream fout ("data.txt",ios::trunc);
+        std::ofstream fout ("data.txt",std::ios::trunc);
         if(fout.is_open()){
             fout<<highest_score;
             fout.close();
@@ -317,7 +451,11 @@ int main(){
             case 1:{
                 player.Update();
                 enemy.Update();
+                splash_effect.update();
                 gun.Update_bullets();
+                if(IsKeyPressed(KEY_TAB)){
+                    gun.active_laser=!gun.active_laser;
+                }
                 if(IsMouseButtonPressed(MOUSE_BUTTON_LEFT)){
                     gun.Shoot();
                 }
@@ -354,10 +492,14 @@ int main(){
             }
             case 1:{
                 ClearBackground(LIGHTGRAY);
+                gun.draw_laser();
+
                 player.Draw();
                 enemy.Draw();
+
                 gun.Draw();
                 gun.Draw_bullets();
+
                 DrawText(TextFormat("Score: %d",score),(width-MeasureText(TextFormat("Score: %d",score),30))/2,20,30,BLACK);
                 DrawFPS(10,10);
                 break;
@@ -373,6 +515,9 @@ int main(){
         EndDrawing();
         //cerr<<state<<'\n';
     }
+
+    if(score>highest_score) Save_Score(score);
+
     CloseWindow();
     return 0;
 }
