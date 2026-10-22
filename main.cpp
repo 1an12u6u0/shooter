@@ -16,6 +16,11 @@ using std::cerr;
 int score=0;
 int highest_score;
 
+float get_random_float(float min,float max){
+    float scale=(float)rand()/(float)RAND_MAX;
+    return min+scale*(max-min);
+}
+
 class Player{
     public:
         float x=width/2.0f;
@@ -67,6 +72,9 @@ class Player{
             Vector2 play={x,y};
             return CheckCollisionCircles(en,rad,play,radius);
         }
+        bool check_ammo_collect(Rectangle rec){
+            return CheckCollisionCircleRec({x,y},radius,rec);
+        }
         void Clean(){
             x=width/2.0f;
             y=height/2.0f;
@@ -83,6 +91,11 @@ struct bullet{
 
 class Gun{
     public:
+        int ammo=10;
+        vector<Vector2> ammunition;
+        float ammo_timer=0.0f;
+        float ammo_duration=0.0f;
+
         float gun_width=45.0f;
         float gun_height=15.0f;
         float rotation=0.0f;
@@ -124,8 +137,35 @@ class Gun{
             //cout<<rotation<<'\n';
         }
 
+        void spawn_ammo(){
+            if(GetTime()-ammo_timer>=ammo_duration){
+                ammo_timer=GetTime();
+                ammo_duration=get_random_float(4.0f,8.0f);
+
+                float x=(float)GetRandomValue(0,width);
+                float y=(float)GetRandomValue(0,height);
+
+                ammunition.push_back({x,y});
+            }
+        }
+
+        void draw_ammo(){
+            Vector2 ammo_size={15.0f,15.0f};
+            for(int i=ammunition.size()-1;i>=0;i--){
+                Rectangle ammo_rec={
+                    ammunition[i].x,ammunition[i].y,
+                    ammo_size.x,ammo_size.y
+                };
+                if(player.check_ammo_collect(ammo_rec)){
+                    ammo+=3;
+                    ammunition.erase(ammunition.begin()+i);
+                }
+                else DrawRectangleRec(ammo_rec,GOLD);
+            }
+        }
+
         void Shoot(){
-            if(Timeout(0.6)){
+            if(ammo>0&&Timeout(0.6)){
                 float barrel=gun_width-origin.x;
                 float spawn_y=player.y+sinf(radians)*barrel;
                 float spawn_x=player.x+cosf(radians)*barrel;
@@ -138,6 +178,7 @@ class Gun{
                 flash_timer=GetTime();
                 flash_pos={spawn_x,spawn_y};
 
+                ammo--;
                 //cout<<bullets.size()<<'\n';
             }
             
@@ -159,7 +200,7 @@ class Gun{
             }
         }
 
-        void Draw_bullets(){
+        void draw_bullets(){
             if(!bullets.empty()){
                 for(int i=bullets.size()-1;i>=0;i--){
                     float bullet_x=bullets[i].x;
@@ -185,15 +226,24 @@ class Gun{
         void Draw(){
             Angle();
             update_flash();
+            spawn_ammo();
 
             rec={player.x,player.y,gun_width,gun_height};
             DrawRectanglePro(rec,origin,rotation,MAROON);
+
+            draw_bullets();
 
             if(draw_flash){
                 DrawCircleV(flash_pos,bullet_radius*3.0f,ORANGE);
                 DrawCircleV(flash_pos,bullet_radius*1.5f,YELLOW);
             }
 
+            const string ammo_str=TextFormat("Ammo: %d",ammo);
+            const int ammo_str_size=MeasureText(ammo_str.c_str(),25);
+            DrawText(ammo_str.c_str(),(width-ammo_str_size)/2,60,25,GRAY);
+
+            draw_ammo();
+            
         }
         bool Check(float rad,float x,float y){
             if(!bullets.empty()){
@@ -208,6 +258,13 @@ class Gun{
             }
             return 0;
         }
+
+        void clear(){
+            ammo=10;
+            bullets.clear();
+            ammunition.clear();
+            ammo_timer=0.0f;
+        };
 
 };
 
@@ -300,10 +357,6 @@ class Enemy{
             }
             return 0;
         }
-        float get_random_float(float min,float max){
-            float scale=(float)rand()/(float)RAND_MAX;
-            return min+scale*(max-min);
-        }
 
         void New(){
             if(timer(spawn_window)){
@@ -312,7 +365,7 @@ class Enemy{
                 float safe_distance=Player::radius+radius+min_distance;
 
                 float new_speed=get_random_float(1.0f,2.0f);
-                cerr<<new_speed<<'\n';
+                //cerr<<new_speed<<'\n';
 
                 while(1){
                     new_x=(float)GetRandomValue(0,width);
@@ -357,7 +410,11 @@ class Enemy{
                     float x=enemys[i].x;
                     float y=enemys[i].y;
 
-                    DrawCircle(x,y,radius,RED);
+                    unsigned char green=(unsigned char)
+                            (200-enemys[i].speed*60);
+                    Color color={0,green,46,255};
+
+                    DrawCircle(x,y,radius,color);
                 }
             }
         }
@@ -464,6 +521,7 @@ int main(){
                     enemy.Clear();
                     Save_Score(score);
                     player.Clean();
+                    gun.clear();
                     score=0;
                     state=2;
                 }
@@ -498,7 +556,6 @@ int main(){
                 enemy.Draw();
 
                 gun.Draw();
-                gun.Draw_bullets();
 
                 DrawText(TextFormat("Score: %d",score),(width-MeasureText(TextFormat("Score: %d",score),30))/2,20,30,BLACK);
                 DrawFPS(10,10);
